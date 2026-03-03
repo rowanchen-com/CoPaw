@@ -136,10 +136,16 @@ def _load_auth_data() -> dict:
 
 
 def _save_auth_data(data: dict) -> None:
-    """Save auth.json to WORKING_DIR."""
+    """Save auth.json to WORKING_DIR with restrictive permissions."""
     AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(AUTH_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
+    # Best-effort chmod 0600 — effective on Linux/macOS (Docker),
+    # silently ignored on Windows where os.chmod is limited.
+    try:
+        os.chmod(AUTH_FILE, 0o600)
+    except OSError:
+        pass
 
 
 def is_auth_enabled() -> bool:
@@ -151,17 +157,26 @@ def is_auth_enabled() -> bool:
 def init_auth_from_env() -> None:
     """Initialize auth from ADMIN_USERNAME / ADMIN_PASSWORD env vars.
 
-    Called at startup. If env vars are set and auth.json doesn't have
-    credentials yet (or password changed), update auth.json.
+    Called at startup.  Auth is only enabled when ADMIN_PASSWORD is
+    explicitly set in the environment (non-empty).  If the env var is
+    absent or blank, any existing auth.json is left untouched so that
+    operators can disable auth simply by removing the variable.
     """
-    username = os.environ.get("ADMIN_USERNAME", "admin").strip()
-    password = os.environ.get("ADMIN_PASSWORD", "copaw").strip()
+    raw_password = os.environ.get("ADMIN_PASSWORD", "")
+    raw_username = os.environ.get("ADMIN_USERNAME", "")
 
-    if not username:
-        username = "admin"
+    password = raw_password.strip()
+    username = raw_username.strip() or "admin"
+
+    # If ADMIN_PASSWORD is not explicitly provided, skip initialization
+    # so auth stays disabled (or keeps whatever was previously configured).
+    if not password:
+        logger.debug(
+            "ADMIN_PASSWORD not set; skipping auth initialization"
+        )
+        return
 
     data = _load_auth_data()
-    # Check if we need to update
     existing_hash = data.get("password_hash", "")
     existing_salt = data.get("password_salt", "")
     existing_user = data.get("username", "")
@@ -176,13 +191,13 @@ def init_auth_from_env() -> None:
         logger.debug("Auth credentials unchanged, skipping update")
         return
 
-    # Hash and store
+    # Hash and store — rotate jwt_secret on credential change so that
+    # previously issued tokens are invalidated immediately.
     pw_hash, salt = _hash_password(password)
     data["username"] = username
     data["password_hash"] = pw_hash
     data["password_salt"] = salt
-    if "jwt_secret" not in data:
-        data["jwt_secret"] = secrets.token_hex(32)
+    data["jwt_secret"] = secrets.token_hex(32)
 
     _save_auth_data(data)
     logger.info("Auth credentials initialized from environment variables")
@@ -219,6 +234,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         # Skip auth check if auth is not configured
         if not is_auth_enabled():
+            return await call_next(request)
+
+        # Let CORS preflight through so CORSMiddleware can add headers
+        if request.method == "OPTIONS":
             return await call_next(request)
 
         # Public paths don't need auth

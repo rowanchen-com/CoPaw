@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import MainLayout from "./layouts/MainLayout";
 import LoginPage from "./pages/Login";
 import { authApi } from "./api/modules/auth";
-import { getApiToken, clearAuthToken } from "./api/config";
+import { getApiUrl, getApiToken, clearAuthToken } from "./api/config";
 import "./styles/layout.css";
 import "./styles/form-override.css";
 
@@ -35,17 +35,22 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
           setStatus("auth-required");
           return;
         }
-        // Verify token by making a simple API call
-        fetch("/api/version", {
+        // Verify token against dedicated auth endpoint
+        fetch(getApiUrl("/auth/verify"), {
           headers: { Authorization: `Bearer ${token}` },
-        }).then((r) => {
-          if (r.ok) {
-            setStatus("ok");
-          } else {
+        })
+          .then((r) => {
+            if (r.ok) {
+              setStatus("ok");
+            } else {
+              clearAuthToken();
+              setStatus("auth-required");
+            }
+          })
+          .catch(() => {
             clearAuthToken();
             setStatus("auth-required");
-          }
-        });
+          });
       })
       .catch(() => {
         // If we can't reach the server, let them through
