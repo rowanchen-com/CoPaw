@@ -116,7 +116,8 @@ def verify_token(token: str) -> Optional[str]:
         if payload.get("exp", 0) < time.time():
             return None
         return payload.get("sub")
-    except Exception:
+    except (json.JSONDecodeError, KeyError, ValueError, TypeError) as exc:
+        logger.debug("Token verification failed: %s", exc)
         return None
 
 
@@ -125,13 +126,19 @@ def verify_token(token: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 def _load_auth_data() -> dict:
-    """Load auth.json from WORKING_DIR."""
+    """Load auth.json from WORKING_DIR.
+
+    Returns the parsed dict, or a sentinel with ``_auth_load_error``
+    set to ``True`` when the file exists but cannot be read/parsed so
+    that callers can fail closed instead of silently bypassing auth.
+    """
     if AUTH_FILE.is_file():
         try:
             with open(AUTH_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except (json.JSONDecodeError, OSError):
-            pass
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.error("Failed to load auth file %s: %s", AUTH_FILE, exc)
+            return {"_auth_load_error": True}
     return {}
 
 
@@ -149,8 +156,14 @@ def _save_auth_data(data: dict) -> None:
 
 
 def is_auth_enabled() -> bool:
-    """Check if authentication is configured."""
+    """Check if authentication is configured.
+
+    Returns ``True`` when credentials are present **or** when the auth
+    file cannot be read (fail closed) to avoid silently bypassing auth.
+    """
     data = _load_auth_data()
+    if data.get("_auth_load_error"):
+        return True  # fail closed
     return bool(data.get("password_hash"))
 
 
@@ -159,8 +172,10 @@ def init_auth_from_env() -> None:
 
     Called at startup.  Auth is only enabled when ADMIN_PASSWORD is
     explicitly set in the environment (non-empty).  If the env var is
-    absent or blank, any existing auth.json is left untouched so that
-    operators can disable auth simply by removing the variable.
+    absent or blank, initialization is skipped and any existing
+    auth.json is left untouched (auth remains in whatever state it
+    was previously — enabled credentials stay enabled, empty file
+    stays unauthenticated).
     """
     raw_password = os.environ.get("ADMIN_PASSWORD", "")
     raw_username = os.environ.get("ADMIN_USERNAME", "")
@@ -254,12 +269,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         # Try Authorization header first, then fall back to query param
-        # (WebSocket connections can't set custom headers from browser)
+        # ONLY for WebSocket upgrade requests (browser WebSocket API
+        # cannot set custom headers, so token is passed via ?token=xxx).
         token: Optional[str] = None
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             token = auth_header[7:]
-        else:
+        elif "upgrade" in request.headers.get("connection", "").lower():
             token = request.query_params.get("token")
 
         if not token:
