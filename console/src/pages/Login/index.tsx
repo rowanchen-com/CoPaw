@@ -16,7 +16,10 @@ export default function LoginPage() {
     setLoading(true);
     try {
       const res = await authApi.login(values.username, values.password);
-      const redirect = searchParams.get("redirect") || "/chat";
+      const raw = searchParams.get("redirect") || "/chat";
+      // Only allow relative paths to prevent open redirect
+      const redirect =
+        raw.startsWith("/") && !raw.startsWith("//") ? raw : "/chat";
       if (res.token) {
         setAuthToken(res.token);
         navigate(redirect, { replace: true });

@@ -22,40 +22,44 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
   );
 
   useEffect(() => {
-    authApi
-      .getStatus()
-      .then((res) => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await authApi.getStatus();
+        if (cancelled) return;
         if (!res.enabled) {
           setStatus("ok");
           return;
         }
-        // Auth is enabled, check if we have a valid token
         const token = getApiToken();
         if (!token) {
           setStatus("auth-required");
           return;
         }
-        // Verify token against dedicated auth endpoint
-        fetch(getApiUrl("/auth/verify"), {
-          headers: { Authorization: `Bearer ${token}` },
-        })
-          .then((r) => {
-            if (r.ok) {
-              setStatus("ok");
-            } else {
-              clearAuthToken();
-              setStatus("auth-required");
-            }
-          })
-          .catch(() => {
+        try {
+          const r = await fetch(getApiUrl("/auth/verify"), {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (cancelled) return;
+          if (r.ok) {
+            setStatus("ok");
+          } else {
             clearAuthToken();
             setStatus("auth-required");
-          });
-      })
-      .catch(() => {
-        // If we can't reach the server, let them through
-        setStatus("ok");
-      });
+          }
+        } catch {
+          if (!cancelled) {
+            clearAuthToken();
+            setStatus("auth-required");
+          }
+        }
+      } catch {
+        if (!cancelled) setStatus("ok");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   if (status === "loading") return null;
