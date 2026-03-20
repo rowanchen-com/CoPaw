@@ -172,4 +172,3 @@ async def update_profile(req: UpdateProfileRequest, request: Request):
 
     username = req.new_username.strip() if req.new_username else ""
     return LoginResponse(token=token, username=username)
-
